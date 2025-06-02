@@ -1,99 +1,214 @@
 import { format } from 'date-fns'
-import taskData from '../mockData/tasks.json'
 
-// Simulate a simple in-memory store
-let tasks = [...taskData]
+// Get ApperClient for database operations
+const getApperClient = () => {
+  const { ApperClient } = window.ApperSDK;
+  return new ApperClient({
+    apperProjectId: import.meta.env.VITE_APPER_PROJECT_ID,
+    apperPublicKey: import.meta.env.VITE_APPER_PUBLIC_KEY
+  });
+};
 
-const simulateDelay = () => new Promise(resolve => setTimeout(resolve, 300))
+// Field mapping between UI and database schema
+const mapTaskToDatabase = (taskData) => {
+  return {
+    // Only include Updateable fields for create/update operations
+    title: taskData.title?.trim() || '',
+    description: taskData.description?.trim() || '',
+    is_completed: taskData.isCompleted || false,
+    priority: taskData.priority || 'medium',
+    due_date: taskData.dueDate || null,
+    Tags: taskData.tags?.join(',') || ''
+  };
+};
+
+const mapTaskFromDatabase = (dbTask) => {
+  return {
+    id: dbTask.Id,
+    title: dbTask.title || '',
+    description: dbTask.description || '',
+    isCompleted: dbTask.is_completed || false,
+    priority: dbTask.priority || 'medium',
+    dueDate: dbTask.due_date || null,
+    createdAt: dbTask.created_at || dbTask.CreatedOn,
+    updatedAt: dbTask.updated_at || dbTask.ModifiedOn,
+    tags: dbTask.Tags ? dbTask.Tags.split(',').filter(tag => tag.trim()) : []
+  };
+};
 
 export const taskService = {
   async getAll() {
-    await simulateDelay()
-    return tasks
+    try {
+      const apperClient = getApperClient();
+      
+      // Fetch all fields for display purposes
+      const params = {
+        fields: [
+          'Id', 'Name', 'Tags', 'Owner', 'CreatedOn', 'CreatedBy', 
+          'ModifiedOn', 'ModifiedBy', 'title', 'description', 
+          'is_completed', 'priority', 'due_date', 'created_at', 'updated_at'
+        ],
+        orderBy: [
+          {
+            fieldName: 'is_completed',
+            SortType: 'ASC'
+          },
+          {
+            fieldName: 'priority',
+            SortType: 'DESC'
+          }
+        ]
+      };
+
+      const response = await apperClient.fetchRecords('task', params);
+      
+      if (!response || !response.data) {
+        return [];
+      }
+
+      return response.data.map(mapTaskFromDatabase);
+    } catch (error) {
+      console.error('Error fetching tasks:', error);
+      throw new Error('Failed to load tasks');
+    }
   },
 
   async getById(id) {
-    await simulateDelay()
-    const task = tasks.find(task => task.id === id)
-    if (!task) {
-      throw new Error(`Task with id ${id} not found`)
+    try {
+      const apperClient = getApperClient();
+      
+      const params = {
+        fields: [
+          'Id', 'Name', 'Tags', 'Owner', 'CreatedOn', 'CreatedBy', 
+          'ModifiedOn', 'ModifiedBy', 'title', 'description', 
+          'is_completed', 'priority', 'due_date', 'created_at', 'updated_at'
+        ]
+      };
+
+      const response = await apperClient.getRecordById('task', id, params);
+      
+      if (!response || !response.data) {
+        throw new Error(`Task with id ${id} not found`);
+      }
+
+      return mapTaskFromDatabase(response.data);
+    } catch (error) {
+      console.error(`Error fetching task ${id}:`, error);
+      throw new Error(`Task with id ${id} not found`);
     }
-    return task
   },
 
   async create(taskData) {
-    await simulateDelay()
-    
-    if (!taskData.title?.trim()) {
-      throw new Error('Task title is required')
-    }
+    try {
+      if (!taskData.title?.trim()) {
+        throw new Error('Task title is required');
+      }
 
-    const newTask = {
-      id: Date.now().toString(),
-      title: taskData.title.trim(),
-      description: taskData.description?.trim() || '',
-      isCompleted: false,
-      priority: taskData.priority || 'medium',
-      dueDate: taskData.dueDate || null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      tags: taskData.tags || []
-    }
+      const apperClient = getApperClient();
+      
+      // Only include Updateable fields in create operation
+      const dbTaskData = mapTaskToDatabase({
+        ...taskData,
+        isCompleted: false // New tasks are always incomplete
+      });
 
-    tasks.unshift(newTask)
-    return newTask
+      const params = {
+        records: [dbTaskData]
+      };
+
+      const response = await apperClient.createRecord('task', params);
+
+      if (response && response.success && response.results && response.results[0]?.success) {
+        return mapTaskFromDatabase(response.results[0].data);
+      } else {
+        const errorMessage = response.results?.[0]?.errors?.[0]?.message || 'Failed to create task';
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      console.error('Error creating task:', error);
+      throw error;
+    }
   },
 
   async update(id, updates) {
-    await simulateDelay()
-    
-    const taskIndex = tasks.findIndex(task => task.id === id)
-    if (taskIndex === -1) {
-      throw new Error(`Task with id ${id} not found`)
-    }
+    try {
+      if (updates.title !== undefined && !updates.title?.trim()) {
+        throw new Error('Task title cannot be empty');
+      }
 
-    if (updates.title !== undefined && !updates.title?.trim()) {
-      throw new Error('Task title cannot be empty')
-    }
+      const apperClient = getApperClient();
+      
+      // Only include Updateable fields in update operation
+      const dbUpdates = mapTaskToDatabase(updates);
 
-    const updatedTask = {
-      ...tasks[taskIndex],
-      ...updates,
-      updatedAt: new Date().toISOString()
-    }
+      const params = {
+        records: [{
+          Id: parseInt(id),
+          ...dbUpdates
+        }]
+      };
 
-    tasks[taskIndex] = updatedTask
-    return updatedTask
+      const response = await apperClient.updateRecord('task', params);
+
+      if (response && response.success && response.results && response.results[0]?.success) {
+        return mapTaskFromDatabase(response.results[0].data);
+      } else {
+        const errorMessage = response.results?.[0]?.message || 'Failed to update task';
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      console.error('Error updating task:', error);
+      throw error;
+    }
   },
 
   async delete(id) {
-    await simulateDelay()
-    
-    const taskIndex = tasks.findIndex(task => task.id === id)
-    if (taskIndex === -1) {
-      throw new Error(`Task with id ${id} not found`)
-    }
+    try {
+      const apperClient = getApperClient();
+      
+      const params = {
+        RecordIds: [parseInt(id)]
+      };
 
-    tasks.splice(taskIndex, 1)
-    return true
+      const response = await apperClient.deleteRecord('task', params);
+
+      if (response && response.success && response.results && response.results[0]?.success) {
+        return true;
+      } else {
+        const errorMessage = response.results?.[0]?.message || 'Failed to delete task';
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      throw new Error('Failed to delete task');
+    }
   },
 
   async toggleComplete(id) {
-    await simulateDelay()
-    
-    const task = tasks.find(task => task.id === id)
-    if (!task) {
-      throw new Error(`Task with id ${id} not found`)
-    }
+    try {
+      // First get the current task to toggle its completion status
+      const currentTask = await this.getById(id);
+      
+      const apperClient = getApperClient();
+      
+      const params = {
+        records: [{
+          Id: parseInt(id),
+          is_completed: !currentTask.isCompleted
+        }]
+      };
 
-    const updatedTask = {
-      ...task,
-      isCompleted: !task.isCompleted,
-      updatedAt: new Date().toISOString()
-    }
+      const response = await apperClient.updateRecord('task', params);
 
-    const taskIndex = tasks.findIndex(task => task.id === id)
-    tasks[taskIndex] = updatedTask
-    return updatedTask
+      if (response && response.success && response.results && response.results[0]?.success) {
+        return mapTaskFromDatabase(response.results[0].data);
+      } else {
+        const errorMessage = response.results?.[0]?.message || 'Failed to update task';
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      console.error('Error toggling task completion:', error);
+      throw new Error('Failed to update task');
+    }
   }
-}
+};
